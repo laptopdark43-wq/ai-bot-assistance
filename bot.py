@@ -1,5 +1,6 @@
 """
 🌙 Luna AI Bot - FastAPI Version for Render.com
+AUTO-SETS WEBHOOK ON STARTUP
 """
 
 import os
@@ -251,8 +252,6 @@ class ChatHistory:
         return {
             "user_id": user_id,
             "username": metadata.get("username", "Unknown"),
-            "first_seen": metadata.get("first_seen"),
-            "last_seen": metadata.get("last_seen"),
             "total_messages": metadata.get("total_messages", 0),
             "user_messages": user_messages,
             "assistant_messages": assistant_messages,
@@ -467,14 +466,28 @@ async def get_application():
 async def startup_event():
     logger.info("🚀 FastAPI server starting...")
     application = await get_application()
-    logger.info("✅ Bot initialized successfully!")
+    logger.info("�� Bot initialized successfully!")
     logger.info("🌙 Luna AI Bot is running!")
+    
+    # AUTO SET WEBHOOK
+    try:
+        webhook_url = f"{RENDER_URL}{WEBHOOK_PATH}"
+        await application.bot.set_webhook(
+            url=webhook_url,
+            allowed_updates=['message', 'edited_message']
+        )
+        logger.info(f"✅ Webhook set automatically: {webhook_url}")
+    except Exception as e:
+        logger.error(f"⚠️ Webhook setup failed: {e}")
 
 @app.on_event("shutdown")
 async def shutdown_event():
     logger.info("⛔ Shutting down...")
     if _application:
-        await _application.stop()
+        try:
+            await _application.stop()
+        except:
+            pass
 
 @app.get("/")
 async def root():
@@ -510,7 +523,7 @@ async def set_webhook():
             allowed_updates=['message', 'edited_message']
         )
         
-        logger.info(f"Webhook set: {webhook_url}")
+        logger.info(f"✅ Webhook set: {webhook_url}")
         return {"status": "success", "webhook_url": webhook_url}
     except Exception as e:
         logger.error(f"Webhook error: {e}")
