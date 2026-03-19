@@ -579,7 +579,7 @@ async def handle_private_message(update: Update, context: ContextTypes.DEFAULT_T
                 try:
                     notification = f"""
 🔔 **Private Chat Notification**
-━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━���━━━━━━━━━━━━━━━━━━
 👤 **User**: {user.first_name} ({user.username or 'No username'})
 🆔 **User ID**: {user.id}
 
@@ -719,15 +719,15 @@ async def main():
     application.add_handler(CommandHandler("sharedata", owner_sharedata))
     
     # Message handlers
-    # Group messages (needs tag)
+    # Group messages (needs tag) - FIXED: Use ChatType.GROUP instead of Group
     application.add_handler(MessageHandler(
-        filters.Group & filters.TEXT & ~filters.COMMAND,
+        filters.ChatType.GROUP & filters.TEXT & ~filters.COMMAND,
         handle_group_message
     ))
     
-    # Private messages
+    # Private messages - FIXED: Use ChatType.PRIVATE instead of PRIVATE
     application.add_handler(MessageHandler(
-        filters.PRIVATE & filters.TEXT & ~filters.COMMAND,
+        filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND,
         handle_private_message
     ))
     
@@ -735,14 +735,14 @@ async def main():
     application.add_error_handler(error_handler)
     
     logger.info("✅ Bot initialized successfully!")
-    logger.info("━━━━━━��━━━━━━━━━━━━━━━━━━━━━━━")
+    logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     logger.info("🌙 Luna AI Bot is running!")
     logger.info("• Multiple personalities: Friendly & Assistant")
     logger.info("• Frenix API integration (GPT-4o)")
     logger.info("• Smart chat history management")
     logger.info("• Owner notifications on private chats")
     logger.info("• Tag-based group responses")
-    logger.info("━━━━━━━━━━━━━━━━━━━━━━━��━━━━━━")
+    logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     
     async with application:
         await application.start()
