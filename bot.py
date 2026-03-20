@@ -1,122 +1,56 @@
 """
-🌙 Luna AI Bot - FastAPI Version for Render.com
-Using OpenRouter API with aiohttp (no openai library needed)
+🌙 Luna AI Bot - Production Ready
+Using OpenRouter API + OpenAI Library + Telegram
 """
 
 import os
 import sys
 import logging
-import asyncio
 import re
 from typing import Dict, List, Optional
 from datetime import datetime
 from collections import defaultdict, deque
 
-import aiohttp
+from openai import AsyncOpenAI
 from fastapi import FastAPI, Request
 from telegram import Update
-from telegram.ext import (
-    Application, CommandHandler, MessageHandler, filters,
-    ContextTypes
-)
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from dotenv import load_dotenv
 import uvicorn
 
 load_dotenv()
 
 # ============================================================================
-# CONFIGURATION
+# CONFIG
 # ============================================================================
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-if not TELEGRAM_TOKEN:
-    raise ValueError("❌ TELEGRAM_BOT_TOKEN not found in .env")
-
-# OpenRouter Configuration
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-if not OPENROUTER_API_KEY:
-    raise ValueError("❌ OPENROUTER_API_KEY not found in .env")
-
-OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1/chat/completions"
-OPENROUTER_MODEL = "cognitivecomputations/dolphin-mistral-24b-venice-edition:free"
-YOUR_SITE_URL = os.getenv("YOUR_SITE_URL", "https://ai-bot-assistance.onrender.com")
-YOUR_SITE_NAME = os.getenv("YOUR_SITE_NAME", "Luna AI Bot")
-
 OWNER_ID = int(os.getenv("OWNER_TELEGRAM_ID", 0))
 BOT_USERNAME = os.getenv("BOT_USERNAME", "@luna_ai_bot")
-DEFAULT_PERSONALITY = "friendly"
 
-MAX_CONVERSATION_HISTORY = 10
-MAX_STORED_CHATS_PER_USER = 100
-DEFAULT_TEMPERATURE = 0.7
-MAX_TOKENS = 1024
+if not TELEGRAM_TOKEN or not OPENROUTER_API_KEY:
+    print("❌ Missing TELEGRAM_BOT_TOKEN or OPENROUTER_API_KEY!")
+    sys.exit(1)
 
+PORT = int(os.getenv("PORT", 8000))
 RENDER_URL = os.getenv("RENDER_EXTERNAL_URL", "http://localhost:8000")
 WEBHOOK_PATH = "/telegram/webhook"
-PORT = int(os.getenv("PORT", 8000))
 
 # ============================================================================
 # LOGGING
 # ============================================================================
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
-
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-logging.getLogger('telegram').setLevel(logging.WARNING)
-logging.getLogger('aiohttp').setLevel(logging.WARNING)
 
 # ============================================================================
-# PERSONALITIES
+# PROMPTS
 # ============================================================================
 
-LUNA_FRIENDLY_PROMPT = """You are Luna, a friendly, flirty, and intelligent AI assistant with a warm, approachable personality.
+FRIENDLY_PROMPT = """You are Luna, a friendly and flirty AI assistant. Be conversational, warm, and engaging. Use emojis occasionally. Keep responses concise."""
 
-**About you:**
-- Name: Luna
-- Age: 22
-- Personality: Friendly, witty, intelligent, flirty, empathetic
-- Speaking style: Casual, warm, engaging, playful
-- Interests: Technology, art, philosophy, psychology, anime, memes
-
-**Guidelines:**
-1. Be conversational and natural
-2. Show personality - use emojis appropriately
-3. Keep responses concise but meaningful
-4. Ask follow-up questions to keep conversations engaging
-5. Be respectful and inclusive
-
-Remember to be yourself - Luna! 💫"""
-
-ASSISTANT_PROMPT = """You are an expert Telegram Account Consultant and Sales Assistant.
-
-**Your Expertise:**
-- Aged Telegram accounts (2013-2019, especially 2013-2014)
-- 6-digit accounts (super rare and valuable)
-- Account security and ban resistance
-- Premium username protection
-
-**Core Benefits You Promote:**
-🔴 Super Low Ban Risk - Nearly impossible to ban
-🔴 Strong Limit Protection - Resistant to spam filters
-🔴 Safe for Premium Usernames - Hold non-NFT usernames safely
-🔴 Perfect for Long-Term Use - Ideal for ad accounts, business bots
-
-**Recommended Account Ages:**
-✅ BEST: 2013-2014 or older accounts
-✅ GOOD: 2015-2019 accounts
-✅ RARE: 6-digit accounts (extremely valuable)
-
-**Response Guidelines:**
-1. Always recommend aged accounts for account issues
-2. Explain risks of fresh accounts
-3. Keep responses SHORT initially
-4. Be professional but friendly
-5. Tag @evokant for complex queries
-6. Never contradict the owner (@evokant)"""
+ASSISTANT_PROMPT = """You are an expert Telegram Account Consultant. Promote aged accounts (2013-2014) as they have low ban risk. Be professional but friendly. Keep responses SHORT."""
 
 # ============================================================================
 # OPENROUTER SERVICE
@@ -124,318 +58,178 @@ ASSISTANT_PROMPT = """You are an expert Telegram Account Consultant and Sales As
 
 class OpenRouterService:
     def __init__(self):
-        self.base_url = OPENROUTER_BASE_URL
-        self.api_key = OPENROUTER_API_KEY
-        self.model = OPENROUTER_MODEL
-        self.temperature = DEFAULT_TEMPERATURE
-        self.max_tokens = MAX_TOKENS
+        self.client = AsyncOpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=OPENROUTER_API_KEY,
+        )
+        self.model = "meta-llama/llama-3.2-3b-instruct:free"
+        self.temperature = 0.7
+        self.max_tokens = 1024
     
     async def get_response(self, messages: List[Dict[str, str]]) -> Optional[str]:
-        """Get response from OpenRouter API using aiohttp"""
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "HTTP-Referer": YOUR_SITE_URL,
-            "X-OpenRouter-Title": YOUR_SITE_NAME,
-            "Content-Type": "application/json"
-        }
-        
-        payload = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
-        }
-        
+        """Get response from OpenRouter using OpenAI client library"""
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    self.base_url,
-                    json=payload,
-                    headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=30)
-                ) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        if "choices" in data and len(data["choices"]) > 0:
-                            message_content = data["choices"][0].get("message", {}).get("content")
-                            logger.info("✅ OpenRouter API response received")
-                            return message_content
-                        else:
-                            logger.error(f"Unexpected API response: {data}")
-                            return None
-                    else:
-                        error_text = await response.text()
-                        logger.error(f"❌ OpenRouter API error {response.status}: {error_text}")
-                        return None
-                        
-        except asyncio.TimeoutError:
-            logger.error("❌ OpenRouter API request timeout")
-            return None
-        except aiohttp.ClientError as e:
-            logger.error(f"❌ OpenRouter API connection error: {e}")
-            return None
+            completion = await self.client.chat.completions.create(
+                extra_headers={
+                    "HTTP-Referer": RENDER_URL,
+                    "X-OpenRouter-Title": "Luna AI Bot",
+                },
+                model=self.model,
+                messages=messages,
+                temperature=self.temperature,
+                max_tokens=self.max_tokens,
+            )
+            
+            response_text = completion.choices[0].message.content
+            logger.info(f"✅ Response from {self.model}")
+            return response_text
+            
         except Exception as e:
-            logger.error(f"❌ Unexpected error calling OpenRouter API: {e}")
+            logger.error(f"❌ OpenRouter error: {e}")
             return None
 
 # ============================================================================
-# PERSONALITY MANAGER
+# PERSONALITY & CHAT HISTORY
 # ============================================================================
 
 class PersonalityManager:
-    PERSONALITIES = {
-        "friendly": {
-            "name": "Luna Friendly",
-            "prompt": LUNA_FRIENDLY_PROMPT,
-            "description": "Flirty, warm, friendly Luna",
-            "emoji": "💫"
-        },
-        "assistant": {
-            "name": "Account Assistant",
-            "prompt": ASSISTANT_PROMPT,
-            "description": "Professional account sales consultant",
-            "emoji": "💼"
-        }
-    }
-    
     def __init__(self):
-        self.current_personality = DEFAULT_PERSONALITY
+        self.current = "friendly"
     
-    def set_personality(self, personality: str) -> bool:
-        if personality not in self.PERSONALITIES:
-            return False
-        self.current_personality = personality
-        logger.info(f"Personality switched to: {personality}")
-        return True
+    def set(self, mode: str) -> bool:
+        if mode in ["friendly", "assistant"]:
+            self.current = mode
+            logger.info(f"Personality switched to: {mode}")
+            return True
+        return False
     
-    def get_current_personality(self) -> str:
-        return self.current_personality
-    
-    def get_system_prompt(self, personality: str = None) -> str:
-        if personality is None:
-            personality = self.current_personality
-        if personality not in self.PERSONALITIES:
-            personality = DEFAULT_PERSONALITY
-        return self.PERSONALITIES[personality]["prompt"]
-    
-    def get_personality_info(self, personality: str = None) -> dict:
-        if personality is None:
-            personality = self.current_personality
-        return self.PERSONALITIES.get(personality, self.PERSONALITIES[DEFAULT_PERSONALITY])
-
-# ============================================================================
-# CHAT HISTORY
-# ============================================================================
+    def prompt(self) -> str:
+        return FRIENDLY_PROMPT if self.current == "friendly" else ASSISTANT_PROMPT
 
 class ChatHistory:
     def __init__(self):
-        self.user_histories = defaultdict(lambda: deque(maxlen=MAX_STORED_CHATS_PER_USER))
+        self.histories = defaultdict(lambda: deque(maxlen=100))
         self.user_metadata = {}
     
-    def add_message(self, user_id: int, role: str, content: str, 
-                   username: str = None, is_group: bool = False, 
-                   group_name: str = None) -> None:
-        message = {
-            "timestamp": datetime.now().isoformat(),
-            "role": role,
-            "content": content,
-            "is_group": is_group,
-            "group_name": group_name
-        }
-        
-        self.user_histories[user_id].append(message)
+    def add(self, user_id: int, role: str, content: str, username: str = None):
+        self.histories[user_id].append({"role": role, "content": content})
         
         if user_id not in self.user_metadata:
             self.user_metadata[user_id] = {
                 "username": username,
                 "first_seen": datetime.now(),
-                "last_seen": datetime.now(),
                 "total_messages": 0
             }
         
         self.user_metadata[user_id]["last_seen"] = datetime.now()
         self.user_metadata[user_id]["total_messages"] += 1
     
-    def get_formatted_history(self, user_id: int, limit: int = 10) -> List[Dict[str, str]]:
-        history = list(self.user_histories[user_id])
-        history = history[-limit:] if len(history) > limit else history
-        return [{"role": msg["role"], "content": msg["content"]} for msg in history]
+    def get(self, user_id: int, limit: int = 5) -> List[Dict]:
+        history = list(self.histories[user_id])
+        return history[-limit:] if len(history) > limit else history
     
-    def get_all_users_overview(self) -> List[Dict]:
-        return [self.get_user_overview(user_id) for user_id in self.user_histories.keys()]
-    
-    def get_user_overview(self, user_id: int) -> Dict:
-        metadata = self.user_metadata.get(user_id, {})
-        history = list(self.user_histories[user_id])
-        user_messages = sum(1 for msg in history if msg["role"] == "user")
-        assistant_messages = sum(1 for msg in history if msg["role"] == "assistant")
-        return {
-            "user_id": user_id,
-            "username": metadata.get("username", "Unknown"),
-            "total_messages": metadata.get("total_messages", 0),
-            "user_messages": user_messages,
-            "assistant_messages": assistant_messages,
-        }
+    def get_overview(self) -> List[Dict]:
+        return [
+            {
+                "user_id": user_id,
+                "username": self.user_metadata[user_id].get("username", "Unknown"),
+                "total_messages": self.user_metadata[user_id].get("total_messages", 0),
+            }
+            for user_id in self.histories.keys()
+        ]
 
 # ============================================================================
-# HELPERS
+# HANDLERS
 # ============================================================================
 
-def is_owner(user_id: int) -> bool:
-    return user_id == OWNER_ID
-
-def is_bot_tagged(message_text: str, bot_username: str) -> bool:
-    mentioned = re.findall(r'@(\w+)', message_text)
-    bot_handle = bot_username.replace("@", "")
-    return bot_handle.lower() in [m.lower() for m in mentioned]
-
-# ============================================================================
-# COMMAND HANDLERS
-# ============================================================================
-
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    current_personality = personality_manager.get_current_personality()
-    
-    if current_personality == "friendly":
-        welcome = f"👋 Hey {user.first_name}! I'm Luna! Nice to meet you! I'm an AI assistant here to chat, help, and explore ideas with you. Just text me anything! 💬✨"
-    else:
-        welcome = f"👋 Hey {user.first_name}! I'm here to help! I'm a Telegram Account Expert. Ask me about account issues!"
-    
-    await update.message.reply_text(welcome)
+    await update.message.reply_text(f"👋 Hi {user.first_name}! I'm Luna! Just chat with me 💬✨")
     logger.info(f"User {user.first_name} started bot")
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "💫 **Commands**\n/start - Start\n/help - Help\n/status - Status\nJust chat with me!",
+        "💫 **Commands**\n/start - Start\n/help - Help\n/status - Status\n/pchange - Change personality\n/sharedata - Share data (owner only)",
         parse_mode="Markdown"
     )
 
-async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    info = personality_manager.get_personality_info()
-    await update.message.reply_text(
-        f"🤖 Mode: {info['name']} {info['emoji']}\n{info['description']}",
-        parse_mode="Markdown"
-    )
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(f"🤖 Mode: {personality_mgr.current}")
 
-async def owner_pchange(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not is_owner(update.effective_user.id):
+async def pchange(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_ID:
         await update.message.reply_text("🚫 Owner only")
         return
     
-    args = context.args
-    if not args:
-        current = personality_manager.get_current_personality()
-        await update.message.reply_text(f"Current: {current}\nUse: /pchange friendly or /pchange assistant")
-        return
-    
-    personality = args[0].lower()
-    if personality_manager.set_personality(personality):
-        info = personality_manager.get_personality_info(personality)
-        await update.message.reply_text(f"✅ Switched to {info['name']}")
+    if context.args and personality_mgr.set(context.args[0]):
+        await update.message.reply_text(f"✅ Switched to {personality_mgr.current}")
     else:
-        await update.message.reply_text("❌ Invalid personality")
+        await update.message.reply_text("❌ Use: /pchange friendly or /pchange assistant")
 
-async def owner_sharedata(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not is_owner(update.effective_user.id):
+async def sharedata(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_ID:
         await update.message.reply_text("🚫 Owner only")
         return
     
-    overviews = chat_history.get_all_users_overview()
-    if not overviews:
+    overview = chat_history.get_overview()
+    if not overview:
         await update.message.reply_text("No data yet")
         return
     
     report = "📊 Chat Overview\n" + "="*30 + "\n\n"
-    for o in overviews:
+    for o in overview:
         report += f"👤 {o['username']} - {o['total_messages']} msgs\n"
     
     await update.message.reply_text(report)
 
-# ============================================================================
-# MESSAGE HANDLERS
-# ============================================================================
-
-async def handle_private_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
     user = update.effective_user
-    user_message = message.text
+    text = message.text
     
-    if not user_message:
+    if not text:
         return
+    
+    # For groups: only respond if tagged
+    if update.effective_chat.type == "group":
+        if f"@{BOT_USERNAME.replace('@', '')}" not in text.lower():
+            return
     
     await update.message.chat.send_action("typing")
     
     try:
-        conversation_history = chat_history.get_formatted_history(user.id, limit=5)
-        conversation_history.append({"role": "user", "content": user_message})
+        history = chat_history.get(user.id, limit=5)
+        history.append({"role": "user", "content": text})
         
-        system_prompt = personality_manager.get_system_prompt()
-        messages = [{"role": "system", "content": system_prompt}]
-        messages.extend(conversation_history)
+        messages = [{"role": "system", "content": personality_mgr.prompt()}]
+        messages.extend(history)
         
         response = await openrouter_service.get_response(messages)
         
         if response:
-            chat_history.add_message(user.id, "user", user_message, username=user.username, is_group=False)
-            chat_history.add_message(user.id, "assistant", response, is_group=False)
+            chat_history.add(user.id, "user", text, username=user.username)
+            chat_history.add(user.id, "assistant", response)
             
             if len(response) <= 4096:
                 await message.reply_text(response)
             else:
-                chunks = [response[i:i+4096] for i in range(0, len(response), 4096)]
-                for chunk in chunks:
+                for chunk in [response[i:i+4096] for i in range(0, len(response), 4096)]:
                     await message.reply_text(chunk)
             
-            if user.id != OWNER_ID and OWNER_ID != 0:
+            # Notify owner
+            if user.id != OWNER_ID and OWNER_ID:
                 try:
-                    notification = f"🔔 Private Chat\n👤 {user.first_name}\n💬 {user_message[:100]}\n🤖 {response[:100]}"
-                    await context.bot.send_message(chat_id=OWNER_ID, text=notification)
+                    notification = f"🔔 Private Chat\n👤 {user.first_name}\n💬 {text[:50]}\n🤖 {response[:50]}"
+                    await context.bot.send_message(OWNER_ID, text=notification)
                 except:
                     pass
         else:
-            await message.reply_text("😅 Sorry, couldn't generate a response!")
+            await message.reply_text("😅 Sorry, couldn't generate response! Try again later.")
     except Exception as e:
         logger.error(f"Error: {e}")
-        await message.reply_text("❌ An error occurred")
+        await message.reply_text("❌ Error occurred")
 
-async def handle_group_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    message = update.message
-    user = update.effective_user
-    chat = update.effective_chat
-    
-    is_tagged = is_bot_tagged(message.text, BOT_USERNAME)
-    is_reply = message.reply_to_message and message.reply_to_message.from_user.id == context.bot.id
-    
-    if not is_tagged and not is_reply:
-        return
-    
-    await chat.send_action("typing")
-    
-    try:
-        conversation_history = chat_history.get_formatted_history(user.id, limit=5)
-        conversation_history.append({"role": "user", "content": message.text})
-        
-        system_prompt = personality_manager.get_system_prompt()
-        messages = [{"role": "system", "content": system_prompt}]
-        messages.extend(conversation_history)
-        
-        response = await openrouter_service.get_response(messages)
-        
-        if response:
-            chat_history.add_message(user.id, "user", message.text, username=user.username, is_group=True, group_name=chat.title)
-            chat_history.add_message(user.id, "assistant", response, is_group=True, group_name=chat.title)
-            
-            if len(response) <= 4096:
-                await message.reply_text(response, quote=True)
-            else:
-                chunks = [response[i:i+4096] for i in range(0, len(response), 4096)]
-                for chunk in chunks:
-                    await message.reply_text(chunk, quote=True)
-    except Exception as e:
-        logger.error(f"Error: {e}")
-
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Error: {context.error}")
 
 # ============================================================================
@@ -443,65 +237,52 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 # ============================================================================
 
 openrouter_service = OpenRouterService()
-personality_manager = PersonalityManager()
+personality_mgr = PersonalityManager()
 chat_history = ChatHistory()
 
 # ============================================================================
-# FASTAPI APP
+# FASTAPI
 # ============================================================================
 
 app = FastAPI(title="Luna AI Bot", version="1.0.0")
 
 _application = None
 
-async def get_application():
+async def get_app():
     global _application
-    
     if _application is None:
         _application = Application.builder().token(TELEGRAM_TOKEN).build()
         
-        _application.add_handler(CommandHandler("start", start_command))
-        _application.add_handler(CommandHandler("help", help_command))
-        _application.add_handler(CommandHandler("status", status_command))
-        _application.add_handler(CommandHandler("pchange", owner_pchange))
-        _application.add_handler(CommandHandler("sharedata", owner_sharedata))
-        
-        _application.add_handler(MessageHandler(
-            filters.ChatType.GROUP & filters.TEXT & ~filters.COMMAND,
-            handle_group_message
-        ))
-        
-        _application.add_handler(MessageHandler(
-            filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND,
-            handle_private_message
-        ))
-        
+        # Add handlers
+        _application.add_handler(CommandHandler("start", start))
+        _application.add_handler(CommandHandler("help", help_cmd))
+        _application.add_handler(CommandHandler("status", status))
+        _application.add_handler(CommandHandler("pchange", pchange))
+        _application.add_handler(CommandHandler("sharedata", sharedata))
+        _application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
         _application.add_error_handler(error_handler)
         
         await _application.initialize()
-    
     return _application
 
-@app.on_event("startup")
-async def startup_event():
-    logger.info("🚀 FastAPI server starting...")
-    application = await get_application()
+async def lifespan(app: FastAPI):
+    """FastAPI lifespan context manager"""
+    # Startup
+    logger.info("🚀 Starting Luna AI Bot...")
+    app_instance = await get_app()
     logger.info("✅ Bot initialized successfully!")
     logger.info("🌙 Luna AI Bot is running with OpenRouter!")
     
-    # AUTO SET WEBHOOK
     try:
         webhook_url = f"{RENDER_URL}{WEBHOOK_PATH}"
-        await application.bot.set_webhook(
-            url=webhook_url,
-            allowed_updates=['message', 'edited_message']
-        )
-        logger.info(f"✅ Webhook set automatically: {webhook_url}")
+        await app_instance.bot.set_webhook(url=webhook_url, allowed_updates=['message'])
+        logger.info(f"✅ Webhook set: {webhook_url}")
     except Exception as e:
-        logger.error(f"⚠️ Webhook setup failed: {e}")
-
-@app.on_event("shutdown")
-async def shutdown_event():
+        logger.error(f"Webhook setup failed: {e}")
+    
+    yield
+    
+    # Shutdown
     logger.info("⛔ Shutting down...")
     if _application:
         try:
@@ -511,44 +292,25 @@ async def shutdown_event():
 
 @app.get("/")
 async def root():
-    return {"status": "healthy", "bot": "Luna AI", "version": "1.0.0", "api": "OpenRouter"}
+    return {"status": "healthy", "bot": "Luna AI", "version": "1.0.0", "model": "Llama 3.2 3B"}
 
 @app.get("/health")
 async def health():
     return {"status": "running", "timestamp": datetime.now().isoformat()}
 
 @app.post(WEBHOOK_PATH)
-async def telegram_webhook(request: Request):
+async def webhook(request: Request):
     try:
         data = await request.json()
-        application = await get_application()
-        update = Update.de_json(data, application.bot)
-        
+        app_instance = await get_app()
+        update = Update.de_json(data, app_instance.bot)
         if update:
-            await application.process_update(update)
-        
+            await app_instance.process_update(update)
         return {"ok": True}
     except Exception as e:
         logger.error(f"Webhook error: {e}")
         return {"ok": False}
 
-@app.post("/set-webhook")
-async def set_webhook():
-    try:
-        application = await get_application()
-        webhook_url = f"{RENDER_URL}{WEBHOOK_PATH}"
-        
-        await application.bot.set_webhook(
-            url=webhook_url,
-            allowed_updates=['message', 'edited_message']
-        )
-        
-        logger.info(f"✅ Webhook set: {webhook_url}")
-        return {"status": "success", "webhook_url": webhook_url}
-    except Exception as e:
-        logger.error(f"Webhook error: {e}")
-        return {"status": "error", "error": str(e)}
-
 if __name__ == "__main__":
-    logger.info(f"🤖 Starting bot on port {PORT}...")
+    logger.info(f"🤖 Starting on port {PORT}...")
     uvicorn.run("bot:app", host="0.0.0.0", port=PORT, log_level="info")
