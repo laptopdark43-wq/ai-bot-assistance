@@ -1,6 +1,6 @@
 """
 🌙 Luna AI Bot - FastAPI Version for Render.com
-AUTO-SETS WEBHOOK ON STARTUP
+Using OpenRouter API (Free Models)
 """
 
 import os
@@ -12,7 +12,7 @@ from typing import Dict, List, Optional
 from datetime import datetime
 from collections import defaultdict, deque
 
-import aiohttp
+from openai import AsyncOpenAI
 from fastapi import FastAPI, Request
 from telegram import Update
 from telegram.ext import (
@@ -32,12 +32,15 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not TELEGRAM_TOKEN:
     raise ValueError("❌ TELEGRAM_BOT_TOKEN not found in .env")
 
-FRENIX_API_KEY = os.getenv("FRENIX_API_KEY")
-if not FRENIX_API_KEY:
-    raise ValueError("❌ FRENIX_API_KEY not found in .env")
+# OpenRouter Configuration
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+if not OPENROUTER_API_KEY:
+    raise ValueError("❌ OPENROUTER_API_KEY not found in .env")
 
-FRENIX_API_URL = "https://api.frenix.sh/v1/chat/completions"
-FRENIX_MODEL = "gpt-4o"
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+OPENROUTER_MODEL = "cognitivecomputations/dolphin-mistral-24b-venice-edition:free"
+YOUR_SITE_URL = os.getenv("YOUR_SITE_URL", "https://ai-bot-assistance.onrender.com")
+YOUR_SITE_NAME = os.getenv("YOUR_SITE_NAME", "Luna AI Bot")
 
 OWNER_ID = int(os.getenv("OWNER_TELEGRAM_ID", 0))
 BOT_USERNAME = os.getenv("BOT_USERNAME", "@luna_ai_bot")
@@ -64,7 +67,7 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 logging.getLogger('telegram').setLevel(logging.WARNING)
-logging.getLogger('aiohttp').setLevel(logging.WARNING)
+logging.getLogger('openai').setLevel(logging.WARNING)
 
 # ============================================================================
 # PERSONALITIES
@@ -77,6 +80,7 @@ LUNA_FRIENDLY_PROMPT = """You are Luna, a friendly, flirty, and intelligent AI a
 - Age: 22
 - Personality: Friendly, witty, intelligent, flirty, empathetic
 - Speaking style: Casual, warm, engaging, playful
+- Interests: Technology, art, philosophy, psychology, anime, memes
 
 **Guidelines:**
 1. Be conversational and natural
@@ -115,47 +119,39 @@ ASSISTANT_PROMPT = """You are an expert Telegram Account Consultant and Sales As
 6. Never contradict the owner (@evokant)"""
 
 # ============================================================================
-# FRENIX SERVICE
+# OPENROUTER SERVICE
 # ============================================================================
 
-class FrenixService:
+class OpenRouterService:
     def __init__(self):
-        self.api_url = FRENIX_API_URL
-        self.api_key = FRENIX_API_KEY
-        self.model = FRENIX_MODEL
+        self.client = AsyncOpenAI(
+            base_url=OPENROUTER_BASE_URL,
+            api_key=OPENROUTER_API_KEY
+        )
+        self.model = OPENROUTER_MODEL
         self.temperature = DEFAULT_TEMPERATURE
         self.max_tokens = MAX_TOKENS
     
     async def get_response(self, messages: List[Dict[str, str]]) -> Optional[str]:
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
-        }
-        
-        payload = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
-            "stream": False
-        }
-        
+        """Get response from OpenRouter API"""
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    self.api_url,
-                    json=payload,
-                    headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=30)
-                ) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        if "choices" in data and len(data["choices"]) > 0:
-                            return data["choices"][0].get("message", {}).get("content")
-                    logger.error(f"Frenix API error {response.status}")
-                    return None
+            completion = await self.client.chat.completions.create(
+                extra_headers={
+                    "HTTP-Referer": YOUR_SITE_URL,
+                    "X-OpenRouter-Title": YOUR_SITE_NAME,
+                },
+                model=self.model,
+                messages=messages,
+                temperature=self.temperature,
+                max_tokens=self.max_tokens,
+            )
+            
+            response_text = completion.choices[0].message.content
+            logger.info("✅ OpenRouter API response received")
+            return response_text
+            
         except Exception as e:
-            logger.error(f"Frenix API error: {e}")
+            logger.error(f"❌ OpenRouter API error: {e}")
             return None
 
 # ============================================================================
@@ -354,7 +350,7 @@ async def handle_private_message(update: Update, context: ContextTypes.DEFAULT_T
         messages = [{"role": "system", "content": system_prompt}]
         messages.extend(conversation_history)
         
-        response = await frenix_service.get_response(messages)
+        response = await openrouter_service.get_response(messages)
         
         if response:
             chat_history.add_message(user.id, "user", user_message, username=user.username, is_group=False)
@@ -400,7 +396,7 @@ async def handle_group_message(update: Update, context: ContextTypes.DEFAULT_TYP
         messages = [{"role": "system", "content": system_prompt}]
         messages.extend(conversation_history)
         
-        response = await frenix_service.get_response(messages)
+        response = await openrouter_service.get_response(messages)
         
         if response:
             chat_history.add_message(user.id, "user", message.text, username=user.username, is_group=True, group_name=chat.title)
@@ -422,7 +418,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 # GLOBAL INSTANCES
 # ============================================================================
 
-frenix_service = FrenixService()
+openrouter_service = OpenRouterService()
 personality_manager = PersonalityManager()
 chat_history = ChatHistory()
 
@@ -466,8 +462,8 @@ async def get_application():
 async def startup_event():
     logger.info("🚀 FastAPI server starting...")
     application = await get_application()
-    logger.info("�� Bot initialized successfully!")
-    logger.info("🌙 Luna AI Bot is running!")
+    logger.info("✅ Bot initialized successfully!")
+    logger.info("🌙 Luna AI Bot is running with OpenRouter!")
     
     # AUTO SET WEBHOOK
     try:
@@ -491,7 +487,7 @@ async def shutdown_event():
 
 @app.get("/")
 async def root():
-    return {"status": "healthy", "bot": "Luna AI", "version": "1.0.0"}
+    return {"status": "healthy", "bot": "Luna AI", "version": "1.0.0", "api": "OpenRouter"}
 
 @app.get("/health")
 async def health():
