@@ -1,6 +1,6 @@
 """
 🌙 Luna AI Bot - Production Ready
-Using OpenRouter API + OpenAI Library + Telegram
+Using OpenRouter API + aiohttp + Telegram
 """
 
 import os
@@ -11,7 +11,7 @@ from typing import Dict, List, Optional
 from datetime import datetime
 from collections import defaultdict, deque
 
-from openai import AsyncOpenAI
+import aiohttp
 from fastapi import FastAPI, Request
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -53,37 +53,50 @@ FRIENDLY_PROMPT = """You are Luna, a friendly and flirty AI assistant. Be conver
 ASSISTANT_PROMPT = """You are an expert Telegram Account Consultant. Promote aged accounts (2013-2014) as they have low ban risk. Be professional but friendly. Keep responses SHORT."""
 
 # ============================================================================
-# OPENROUTER SERVICE
+# OPENROUTER SERVICE - Using aiohttp
 # ============================================================================
 
 class OpenRouterService:
     def __init__(self):
-        self.client = AsyncOpenAI(
-            base_url="https://openrouter.ai/api/v1",
-            api_key=OPENROUTER_API_KEY,
-        )
         self.model = "meta-llama/llama-3.2-3b-instruct:free"
         self.temperature = 0.7
         self.max_tokens = 1024
     
     async def get_response(self, messages: List[Dict[str, str]]) -> Optional[str]:
-        """Get response from OpenRouter using OpenAI client library"""
+        """Get response from OpenRouter using aiohttp"""
+        headers = {
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "HTTP-Referer": RENDER_URL,
+            "X-OpenRouter-Title": "Luna AI Bot",
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+        }
+        
         try:
-            completion = await self.client.chat.completions.create(
-                extra_headers={
-                    "HTTP-Referer": RENDER_URL,
-                    "X-OpenRouter-Title": "Luna AI Bot",
-                },
-                model=self.model,
-                messages=messages,
-                temperature=self.temperature,
-                max_tokens=self.max_tokens,
-            )
-            
-            response_text = completion.choices[0].message.content
-            logger.info(f"✅ Response from {self.model}")
-            return response_text
-            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    json=payload,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=30)
+                ) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        if "choices" in data and len(data["choices"]) > 0:
+                            content = data["choices"][0]["message"]["content"]
+                            logger.info(f"✅ Response from {self.model}")
+                            return content
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"❌ OpenRouter error {response.status}: {error_text}")
+                        return None
+                        
         except Exception as e:
             logger.error(f"❌ OpenRouter error: {e}")
             return None
@@ -265,9 +278,8 @@ async def get_app():
         await _application.initialize()
     return _application
 
-async def lifespan(app: FastAPI):
-    """FastAPI lifespan context manager"""
-    # Startup
+@app.on_event("startup")
+async def startup():
     logger.info("🚀 Starting Luna AI Bot...")
     app_instance = await get_app()
     logger.info("✅ Bot initialized successfully!")
@@ -279,11 +291,9 @@ async def lifespan(app: FastAPI):
         logger.info(f"✅ Webhook set: {webhook_url}")
     except Exception as e:
         logger.error(f"Webhook setup failed: {e}")
-    
-    yield
-    
-    # Shutdown
-    logger.info("⛔ Shutting down...")
+
+@app.on_event("shutdown")
+async def shutdown():
     if _application:
         try:
             await _application.stop()
