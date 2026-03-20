@@ -1,6 +1,6 @@
 """
 🌙 Luna AI Bot - FastAPI Version for Render.com
-Using OpenRouter API (Free Models)
+Using OpenRouter API with aiohttp (no openai library needed)
 """
 
 import os
@@ -12,7 +12,7 @@ from typing import Dict, List, Optional
 from datetime import datetime
 from collections import defaultdict, deque
 
-from openai import AsyncOpenAI
+import aiohttp
 from fastapi import FastAPI, Request
 from telegram import Update
 from telegram.ext import (
@@ -37,7 +37,7 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 if not OPENROUTER_API_KEY:
     raise ValueError("❌ OPENROUTER_API_KEY not found in .env")
 
-OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_MODEL = "cognitivecomputations/dolphin-mistral-24b-venice-edition:free"
 YOUR_SITE_URL = os.getenv("YOUR_SITE_URL", "https://ai-bot-assistance.onrender.com")
 YOUR_SITE_NAME = os.getenv("YOUR_SITE_NAME", "Luna AI Bot")
@@ -67,7 +67,7 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 logging.getLogger('telegram').setLevel(logging.WARNING)
-logging.getLogger('openai').setLevel(logging.WARNING)
+logging.getLogger('aiohttp').setLevel(logging.WARNING)
 
 # ============================================================================
 # PERSONALITIES
@@ -124,34 +124,58 @@ ASSISTANT_PROMPT = """You are an expert Telegram Account Consultant and Sales As
 
 class OpenRouterService:
     def __init__(self):
-        self.client = AsyncOpenAI(
-            base_url=OPENROUTER_BASE_URL,
-            api_key=OPENROUTER_API_KEY
-        )
+        self.base_url = OPENROUTER_BASE_URL
+        self.api_key = OPENROUTER_API_KEY
         self.model = OPENROUTER_MODEL
         self.temperature = DEFAULT_TEMPERATURE
         self.max_tokens = MAX_TOKENS
     
     async def get_response(self, messages: List[Dict[str, str]]) -> Optional[str]:
-        """Get response from OpenRouter API"""
+        """Get response from OpenRouter API using aiohttp"""
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "HTTP-Referer": YOUR_SITE_URL,
+            "X-OpenRouter-Title": YOUR_SITE_NAME,
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+        }
+        
         try:
-            completion = await self.client.chat.completions.create(
-                extra_headers={
-                    "HTTP-Referer": YOUR_SITE_URL,
-                    "X-OpenRouter-Title": YOUR_SITE_NAME,
-                },
-                model=self.model,
-                messages=messages,
-                temperature=self.temperature,
-                max_tokens=self.max_tokens,
-            )
-            
-            response_text = completion.choices[0].message.content
-            logger.info("✅ OpenRouter API response received")
-            return response_text
-            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    self.base_url,
+                    json=payload,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=30)
+                ) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        if "choices" in data and len(data["choices"]) > 0:
+                            message_content = data["choices"][0].get("message", {}).get("content")
+                            logger.info("✅ OpenRouter API response received")
+                            return message_content
+                        else:
+                            logger.error(f"Unexpected API response: {data}")
+                            return None
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"❌ OpenRouter API error {response.status}: {error_text}")
+                        return None
+                        
+        except asyncio.TimeoutError:
+            logger.error("❌ OpenRouter API request timeout")
+            return None
+        except aiohttp.ClientError as e:
+            logger.error(f"❌ OpenRouter API connection error: {e}")
+            return None
         except Exception as e:
-            logger.error(f"❌ OpenRouter API error: {e}")
+            logger.error(f"❌ Unexpected error calling OpenRouter API: {e}")
             return None
 
 # ============================================================================
